@@ -81,16 +81,19 @@ def start_detection():
     cap = cv2.VideoCapture(CAMERA_URL)
     last_trigger = 0
     
+    frame_count = 0  # Ajoute un compteur
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("⚠️ Flux vidéo perdu ou erreur RTSP. Tentative de reconnexion dans 5s...")
             time.sleep(5)
             cap = cv2.VideoCapture(CAMERA_URL)
             continue
 
-        # Analyse OCR (On lit le texte sur l'image)
-        # On peut optimiser en ne lisant qu'une image sur 10 pour économiser le CPU
+        frame_count += 1
+        # On n'analyse qu'une image sur 10 (environ 1 analyse par seconde)
+        if frame_count % 10 != 0:
+            continue
+
         results = reader.readtext(frame)
         
         for (bbox, text, prob) in results:
