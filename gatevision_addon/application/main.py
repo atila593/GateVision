@@ -1,74 +1,79 @@
 import cv2
-import easyocr
+import pytesseract
 import json
 import time
 import paho.mqtt.client as mqtt
 import os
 import sys
 
-# DESACTIVATION DES OPTIMISATIONS QUI FONT CRASHER TON CPU
-os.environ["OPENCV_FOR_THREADS_NUM"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-
 def log(message):
     print(f"{message}", flush=True)
 
-log("--- [MODE SURVIE ULTIME V1.1.4] ---")
+log("--- [DÉMARRAGE MODE TESSERACT V1.2.0] ---")
 
-# Chargement IA
-try:
-    log("📦 Préparation de l'IA (CPU unique)...")
-    reader = easyocr.Reader(['fr', 'en'], gpu=False)
-    log("✅ IA Prête.")
-except Exception as e:
-    log(f"❌ Erreur IA : {e}")
-    sys.exit(1)
-
-# Config HA
+# Chargement des options Home Assistant
 try:
     with open("/data/options.json", "r") as f:
         options = json.load(f)
-except:
-    options = {}
+except Exception as e:
+    log(f"❌ Erreur options : {e}")
+    sys.exit(1)
 
 CAMERA_URL = options.get("camera_url", "")
 WHITELIST = options.get("authorized_plates", [])
+MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
+MQTT_TOPIC = options.get("mqtt_topic", "gate/control")
+MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
+
+def trigger_action(plate):
+    log(f"✅ ACCÈS AUTORISÉ : {plate}")
+    try:
+        client = mqtt.Client()
+        user = options.get("mqtt_user")
+        password = options.get("mqtt_password")
+        if user and password:
+            client.username_pw_set(user, password)
+        client.connect(MQTT_BROKER, options.get("mqtt_port", 1883), 60)
+        client.publish(MQTT_TOPIC, MQTT_PAYLOAD)
+        client.disconnect()
+        log(f"📡 Signal MQTT envoyé vers {MQTT_TOPIC}")
+    except Exception as e:
+        log(f"❌ Erreur MQTT : {e}")
 
 def start_detection():
-    log(f"📸 Connexion à : {CAMERA_URL}")
-    # On utilise la méthode la plus simple possible pour OpenCV
+    log(f"📸 Connexion caméra : {CAMERA_URL}")
     cap = cv2.VideoCapture(CAMERA_URL)
     
     if not cap.isOpened():
-        log("❌ Impossible d'ouvrir le flux vidéo. Vérifiez l'URL ou l'IP.")
+        log("❌ Impossible d'ouvrir le flux. Vérifiez l'URL RTSP.")
         return
 
-    log("🚀 ANALYSE ACTIVE. Présentez une plaque...")
+    log("🚀 GateVision est en ligne (Moteur Tesseract)")
     
     while True:
         ret, frame = cap.read()
         if not ret:
-            log("⚠️ Flux perdu, reconnexion...")
-            time.sleep(10)
+            time.sleep(5)
             cap = cv2.VideoCapture(CAMERA_URL)
             continue
 
-        # PAUSE POUR LE CPU
+        # On analyse une image toutes les 2 secondes (économie CPU)
         time.sleep(2)
 
-        # REDUCTION TAILLE IMAGE
-        small_frame = cv2.resize(frame, (640, 360))
+        # Prétraitement léger pour Tesseract
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Lecture de la plaque (psm 7 = une seule ligne de texte)
+        text = pytesseract.image_to_string(gray, config='--psm 7')
+        
+        # Nettoyage du texte pour ne garder que lettres et chiffres
+        plate = "".join(e for e in text if e.isalnum()).upper()
 
-        # IA
-        try:
-            results = reader.readtext(small_frame)
-            for (bbox, text, prob) in results:
-                plate = text.replace(" ", "").replace("-", "").upper()
-                if len(plate) >= 5:
-                    log(f"🔍 Vu : {plate} ({int(prob*100)}%)")
-                    # (Code MQTT ici...)
-        except Exception as e:
-            log(f"⚠️ Erreur pendant l'analyse d'une image : {e}")
+        if len(plate) >= 5:
+            log(f"🔍 Plaque vue : {plate}")
+            if any(auth_plate in plate for auth_plate in WHITELIST):
+                trigger_action(plate)
+                time.sleep(10) # Pause après détection
 
 if __name__ == "__main__":
     start_detection()
