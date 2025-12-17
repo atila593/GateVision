@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir \
 COPY . .
 
 # Lancement du script dans le dossier 'application'
-CMD [ "python", "application/main.py" ]
+CMD [ "python", "app/main.py" ]
