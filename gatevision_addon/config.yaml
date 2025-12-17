@@ -1,5 +1,5 @@
 name: "GateVision"
-version: "1.0.8"
+version: "1.0.9"
 slug: "gatevision"
 description: "Reconnaissance de plaques universelle pour portail et garage via MQTT"
 url: "https://github.com/atila593/GateVision"
