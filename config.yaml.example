@@ -1,0 +1,21 @@
+# --- EXEMPLE DE CONFIGURATION GATEVISION ---
+# Renommez ce fichier en 'config.yaml' et complétez vos infos.
+
+# URL de votre flux vidéo (Ezviz, Reolink, etc.)
+camera_url: "rtsp://admin:VOTRE_CODE_VERIF@192.168.1.XX:554/ch1/main"
+
+# Liste des plaques autorisées (une par ligne avec un tiret)
+authorized_plates:
+  - "AB123CD"
+  - "EF456GH"
+
+# Méthode d'ouverture : "MQTT" ou "WEBHOOK"
+output_method: "MQTT"
+
+# Si vous utilisez MQTT (ex: Home Assistant Mosquitto)
+mqtt_broker: "192.168.1.50"
+mqtt_topic: "maison/garage/commande"
+mqtt_payload: "ON"
+
+# Si vous utilisez un Webhook (ex: commande directe IP)
+webhook_url: "http://192.168.1.XX/control?cmd=ON"
