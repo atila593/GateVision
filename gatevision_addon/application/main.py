@@ -86,7 +86,7 @@ def start_detection():
 
         frame_count += 1
         # Analyse 1 image sur 10 pour économiser 90% du CPU
-        if frame_count % 10 != 0:
+        if frame_count % 60 != 0:
             continue
 
         # Analyse OCR
