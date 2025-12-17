@@ -29,8 +29,11 @@ CAMERA_URL = options.get("camera_url", "")
 WHITELIST = options.get("authorized_plates", [])
 
 def start_detection():
-    cap = cv2.VideoCapture(CAMERA_URL)
-    # On réduit le buffer de la caméra pour ne pas accumuler de retard
+    # On définit l'option AVANT d'ouvrir le flux
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
+    cap = cv2.VideoCapture(CAMERA_URL, cv2.CAP_FFMPEG)
+    
+    # On réduit le buffer pour ne pas avoir de retard sur le direct
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
     
     log("🚀 Analyse en cours (Mode Ultra-Léger)...")
@@ -38,8 +41,9 @@ def start_detection():
     while True:
         ret, frame = cap.read()
         if not ret:
+            log("⚠️ Erreur de flux, tentative de reconnexion...")
             time.sleep(5)
-            cap = cv2.VideoCapture(CAMERA_URL)
+            cap = cv2.VideoCapture(CAMERA_URL, cv2.CAP_FFMPEG)
             continue
 
         # --- OPTIMISATION RADICALE ---
