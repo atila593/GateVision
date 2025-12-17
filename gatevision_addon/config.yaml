@@ -1,5 +1,5 @@
 name: "GateVision"
-version: "1.0.6"
+version: "1.0.7"
 slug: "gatevision"
 description: "Reconnaissance de plaques universelle pour portail et garage via MQTT"
 url: "https://github.com/atila593/GateVision"
@@ -7,8 +7,10 @@ arch:
   - amd64
   - armv7
   - aarch64
-startup: services
+startup: application
 boot: auto
+host_network: true
+privileged: ["SYS_RAWIO"]
 options:
   camera_url: "rtsp://admin:password@192.168.1.XX:554/live"
   authorized_plates:
