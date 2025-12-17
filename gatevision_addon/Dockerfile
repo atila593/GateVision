@@ -22,4 +22,4 @@ RUN pip install --no-cache-dir \
 COPY . .
 
 # Lancement du script
-CMD [ "python3", "-u", "application/main.py" ]
+CMD [ "python3", "-u", "main.py" ]
