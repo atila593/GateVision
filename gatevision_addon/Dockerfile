@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir \
 COPY . .
 
 # Chemin vers le script main.py
-CMD [ "python", "app/main.py" ]
+CMD [ "python", "application/main.py" ]
