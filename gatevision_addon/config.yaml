@@ -1,6 +1,6 @@
 name: "GateVision"
 description: "Reconnaissance de plaques universelle pour portail et garage"
-version: "1.0.0"
+version: "1.0.1"
 slug: "gatevision"
 arch:
   - aarch64
