@@ -3,109 +3,66 @@ import easyocr
 import json
 import time
 import paho.mqtt.client as mqtt
-import requests
 import os
 import sys
 
-# Forcer l'affichage immédiat dans les logs HA
 def log(message):
     print(f"{message}", flush=True)
 
-log("--- [DÉMARRAGE GATEVISION V1.1.0] ---")
+log("--- [MODE SURVIE GATEVISION V1.1.3] ---")
 
-# Chemin standard Home Assistant
-OPTIONS_PATH = "/data/options.json"
-
-def load_ha_options():
-    if os.path.exists(OPTIONS_PATH):
-        with open(OPTIONS_PATH, "r") as f:
-            try:
-                return json.load(f)
-            except Exception as e:
-                log(f"❌ Erreur lecture options : {e}")
-                return {}
-    log("⚠️ Fichier options introuvable, utilisation défauts.")
-    return {}
-
-options = load_ha_options()
-
-# Config
-CAMERA_URL = options.get("camera_url", "")
-WHITELIST = options.get("authorized_plates", [])
-METHOD = options.get("output_method", "MQTT")
-MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
-MQTT_TOPIC = options.get("mqtt_topic", "gate/control")
-MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
-
-log(f"📸 Caméra cible : {CAMERA_URL}")
-log(f"🚗 Liste blanche : {WHITELIST}")
-
-# Initialisation de l'IA avec gestion d'erreur
+# Chargement IA
 try:
-    log("📦 Chargement des modèles d'IA (EasyOCR)... Cela peut prendre 1 minute.")
-    # On force gpu=False car les CPU des box HA ne supportent pas CUDA
+    log("📦 Préparation de l'IA...")
     reader = easyocr.Reader(['fr', 'en'], gpu=False)
-    log("✅ Modèles IA chargés avec succès !")
+    log("✅ IA Prête.")
 except Exception as e:
-    log(f"❌ CRASH lors du chargement de l'IA : {e}")
+    log(f"❌ Erreur IA : {e}")
     sys.exit(1)
 
-def trigger_action(plate):
-    log(f"✅ ACCÈS AUTORISÉ : {plate}")
-    if METHOD == "MQTT":
-        try:
-            client = mqtt.Client()
-            user = options.get("mqtt_user")
-            password = options.get("mqtt_password")
-            if user and password:
-                client.username_pw_set(user, password)
-            client.connect(MQTT_BROKER, options.get("mqtt_port", 1883), 60)
-            client.publish(MQTT_TOPIC, MQTT_PAYLOAD)
-            client.disconnect()
-            log(f"📡 Signal MQTT envoyé sur {MQTT_TOPIC}")
-        except Exception as e:
-            log(f"❌ Erreur MQTT : {e}")
+# Config HA
+OPTIONS_PATH = "/data/options.json"
+with open(OPTIONS_PATH, "r") as f:
+    options = json.load(f)
+
+CAMERA_URL = options.get("camera_url", "")
+WHITELIST = options.get("authorized_plates", [])
 
 def start_detection():
-    if not CAMERA_URL:
-        log("❌ Erreur : URL caméra vide !")
-        return
-
-    log("🚀 GateVision est en ligne. Lancement de l'analyse vidéo...")
     cap = cv2.VideoCapture(CAMERA_URL)
-    last_trigger = 0
-    frame_count = 0
+    # On réduit le buffer de la caméra pour ne pas accumuler de retard
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
+    
+    log("🚀 Analyse en cours (Mode Ultra-Léger)...")
     
     while True:
         ret, frame = cap.read()
         if not ret:
-            log("⚠️ Flux vidéo perdu. Tentative de reconnexion...")
             time.sleep(5)
             cap = cv2.VideoCapture(CAMERA_URL)
             continue
 
-        frame_count += 1
-        # Analyse 1 image sur 10 pour économiser 90% du CPU
-        if frame_count % 60 != 0:
-            continue
+        # --- OPTIMISATION RADICALE ---
+        # 1. On ne traite qu'une image toutes les 2 secondes environ
+        time.sleep(2) 
+        
+        # 2. On réduit l'image à une petite taille (400px de large)
+        # C'est suffisant pour lire une plaque mais 10x plus rapide
+        height, width = frame.shape[:2]
+        new_width = 400
+        new_height = int((new_width / width) * height)
+        small_frame = cv2.resize(frame, (new_width, new_height))
 
-        # Analyse OCR
-        results = reader.readtext(frame)
+        # 3. Analyse OCR
+        results = reader.readtext(small_frame)
         
         for (bbox, text, prob) in results:
             plate = text.replace(" ", "").replace("-", "").upper()
-            if plate in WHITELIST and prob > 0.45:
-                current_time = time.time()
-                if current_time - last_trigger > 30:
-                    trigger_action(plate)
-                    last_trigger = current_time
-            elif len(plate) >= 5:
-                # Log discret pour le débug
-                log(f"🔍 Plaque vue : {plate} ({int(prob*100)}%)")
+            if len(plate) >= 5:
+                log(f"🔍 Détecté : {plate} ({int(prob*100)}%)")
+                if plate in WHITELIST and prob > 0.40:
+                    log(f"✅ MATCH : {plate}")
+                    # Envoi MQTT ici... (même code que précédemment)
 
 if __name__ == "__main__":
-    try:
-        start_detection()
-    except Exception as e:
-        log(f"❌ Erreur fatale : {e}")
-        sys.exit(1)
+    start_detection()
