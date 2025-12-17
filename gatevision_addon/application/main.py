@@ -5,8 +5,15 @@ import time
 import paho.mqtt.client as mqtt
 import requests
 import os
+import sys
 
-# Chemin standard où Home Assistant stocke la configuration de l'addon
+# Forcer l'affichage immédiat dans les logs HA
+def log(message):
+    print(f"{message}", flush=True)
+
+log("--- [DÉMARRAGE GATEVISION V1.1.0] ---")
+
+# Chemin standard Home Assistant
 OPTIONS_PATH = "/data/options.json"
 
 def load_ha_options():
@@ -15,104 +22,90 @@ def load_ha_options():
             try:
                 return json.load(f)
             except Exception as e:
-                print(f"❌ Erreur lors de la lecture des options : {e}")
+                log(f"❌ Erreur lecture options : {e}")
                 return {}
-    else:
-        print("⚠️ Fichier d'options introuvable, utilisation de valeurs par défaut.")
-        return {}
+    log("⚠️ Fichier options introuvable, utilisation défauts.")
+    return {}
 
-# Chargement initial des options
 options = load_ha_options()
 
-# Variables de configuration
+# Config
 CAMERA_URL = options.get("camera_url", "")
 WHITELIST = options.get("authorized_plates", [])
 METHOD = options.get("output_method", "MQTT")
 MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
 MQTT_TOPIC = options.get("mqtt_topic", "gate/control")
 MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
-WEBHOOK_URL = options.get("webhook_url", "")
 
-# Initialisation de l'IA (OCR)
-print("📦 Chargement des modèles d'IA (EasyOCR)...")
-# On utilise le CPU car la plupart des box HA n'ont pas de GPU dédié
-reader = easyocr.Reader(['fr', 'en'], gpu=False)
+log(f"📸 Caméra cible : {CAMERA_URL}")
+log(f"🚗 Liste blanche : {WHITELIST}")
+
+# Initialisation de l'IA avec gestion d'erreur
+try:
+    log("📦 Chargement des modèles d'IA (EasyOCR)... Cela peut prendre 1 minute.")
+    # On force gpu=False car les CPU des box HA ne supportent pas CUDA
+    reader = easyocr.Reader(['fr', 'en'], gpu=False)
+    log("✅ Modèles IA chargés avec succès !")
+except Exception as e:
+    log(f"❌ CRASH lors du chargement de l'IA : {e}")
+    sys.exit(1)
 
 def trigger_action(plate):
-    print(f"✅ ACCÈS AUTORISÉ : {plate}")
-    
+    log(f"✅ ACCÈS AUTORISÉ : {plate}")
     if METHOD == "MQTT":
         try:
             client = mqtt.Client()
-            
-            # Récupération dynamique des identifiants depuis les options
             user = options.get("mqtt_user")
             password = options.get("mqtt_password")
-            port = options.get("mqtt_port", 1883)
-            
-            # Si un utilisateur est configuré, on s'authentifie
             if user and password:
                 client.username_pw_set(user, password)
-                print(f"🔑 Authentification MQTT avec l'utilisateur : {user}")
-            
-            client.connect(MQTT_BROKER, port, 60)
+            client.connect(MQTT_BROKER, options.get("mqtt_port", 1883), 60)
             client.publish(MQTT_TOPIC, MQTT_PAYLOAD)
             client.disconnect()
-            print(f"📡 Signal MQTT envoyé sur le topic '{MQTT_TOPIC}'")
+            log(f"📡 Signal MQTT envoyé sur {MQTT_TOPIC}")
         except Exception as e:
-            print(f"❌ Erreur de connexion MQTT : {e}")
-            
-    elif METHOD == "WEBHOOK" and WEBHOOK_URL:
-        try:
-            requests.get(WEBHOOK_URL, timeout=5)
-            print(f"🌐 Signal Webhook envoyé vers {WEBHOOK_URL}")
-        except Exception as e:
-            print(f"❌ Erreur Webhook : {e}")
+            log(f"❌ Erreur MQTT : {e}")
 
 def start_detection():
     if not CAMERA_URL:
-        print("❌ Erreur : URL de la caméra non configurée. Vérifiez l'onglet Configuration.")
+        log("❌ Erreur : URL caméra vide !")
         return
 
-    print(f"🚀 GateVision est en ligne.")
-    print(f"📸 Analyse du flux : {CAMERA_URL}")
-    print(f"🚗 Plaques autorisées : {WHITELIST}")
-
+    log("🚀 GateVision est en ligne. Lancement de l'analyse vidéo...")
     cap = cv2.VideoCapture(CAMERA_URL)
     last_trigger = 0
+    frame_count = 0
     
-    frame_count = 0  # Ajoute un compteur
     while True:
         ret, frame = cap.read()
         if not ret:
+            log("⚠️ Flux vidéo perdu. Tentative de reconnexion...")
             time.sleep(5)
             cap = cv2.VideoCapture(CAMERA_URL)
             continue
 
         frame_count += 1
-        # On n'analyse qu'une image sur 10 (environ 1 analyse par seconde)
+        # Analyse 1 image sur 10 pour économiser 90% du CPU
         if frame_count % 10 != 0:
             continue
 
+        # Analyse OCR
         results = reader.readtext(frame)
         
         for (bbox, text, prob) in results:
-            # Nettoyage de la plaque (enlève espaces, tirets et met en majuscules)
             plate = text.replace(" ", "").replace("-", "").upper()
-            
-            # Vérification de la correspondance avec la liste blanche (whitelist)
-            if plate in WHITELIST and prob > 0.50:
+            if plate in WHITELIST and prob > 0.45:
                 current_time = time.time()
-                # Sécurité pour ne pas déclencher en boucle (30 secondes de délai)
                 if current_time - last_trigger > 30:
                     trigger_action(plate)
                     last_trigger = current_time
-            
-            # On affiche les plaques détectées mais non autorisées dans les logs pour debug
             elif len(plate) >= 5:
-                print(f"🔍 Plaque détectée mais non autorisée : {plate} (Fiabilité: {int(prob*100)}%)")
-
-    cap.release()
+                # Log discret pour le débug
+                log(f"🔍 Plaque vue : {plate} ({int(prob*100)}%)")
 
 if __name__ == "__main__":
-    start_detection()
+    try:
+        start_detection()
+    except Exception as e:
+        log(f"❌ Erreur fatale : {e}")
+        sys.exit(1)
