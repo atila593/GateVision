@@ -1,7 +1,8 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.20
+# Utilisation de l'image Python optimisée pour HA sur amd64
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12
 FROM ${BUILD_FROM}
 
-# 1. Installation des dépendances système critiques
+# 1. Installation des dépendances système pour OpenCV et le décodage vidéo
 RUN apk add --no-cache \
     ffmpeg \
     libjpeg-turbo \
@@ -11,24 +12,23 @@ RUN apk add --no-cache \
     libstdc++ \
     g++ \
     make \
-    python3-dev \
     zlib-dev \
     jpeg-dev \
     musl-dev \
     linux-headers
 
-# 2. Mise à jour des outils de build (Correction du bug bdist_wheel)
-# On installe setuptools et wheel AVANT le reste
-RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade pip setuptools==70.0.0 wheel
+# 2. Installation des outils de build et correction du bug setuptools
+# Note: Pip est déjà présent dans cette image de base
+RUN pip install --no-cache-dir --break-system-packages setuptools==70.0.0 wheel
 
-# 3. Installation des bibliothèques lourdes
-# On sépare pour mieux voir où ça bloque si besoin
-RUN python3 -m pip install --no-cache-dir --break-system-packages opencv-python-headless
-RUN python3 -m pip install --no-cache-dir --break-system-packages easyocr
-RUN python3 -m pip install --no-cache-dir --break-system-packages paho-mqtt numpy
+# 3. Installation d'OpenCV (version headless pour économiser de la place)
+RUN pip install --no-cache-dir --break-system-packages opencv-python-headless
 
-# 4. Copie du script
+# 4. Installation de EasyOCR et ses dépendances
+RUN pip install --no-cache-dir --break-system-packages easyocr paho-mqtt numpy
+
+# 5. Copie du script depuis ton dossier application
 COPY application/gatevision.py /gatevision.py
 
-# 5. Lancement
+# 6. Commande de lancement
 CMD [ "python3", "/gatevision.py" ]
