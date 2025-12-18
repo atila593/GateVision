@@ -1,12 +1,10 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:python3.11
 FROM ${BUILD_FROM}
 
 # -----------------------------
-# 1. Installer Python 3.11 explicitement
+# 1. Dépendances système
 # -----------------------------
 RUN apk add --no-cache \
-    python3=3.11.* \
-    py3-pip \
     py3-numpy \
     py3-opencv \
     ffmpeg \
@@ -21,7 +19,6 @@ RUN apk add --no-cache \
 # -----------------------------
 ENV CUDA_VISIBLE_DEVICES=""
 ENV TORCH_HOME=/opt/torch
-ENV EASYOCR_MODULE_PATH=/opt/easyocr
 ENV EASYOCR_CACHE_DIR=/opt/easyocr
 
 # -----------------------------
