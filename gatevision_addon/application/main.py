@@ -38,13 +38,16 @@ MQTT_TOPIC_CONTROL = options.get("mqtt_topic", "gate/control")
 MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
 MQTT_TOPIC_SENSOR = "gatevision/last_plate"
 
-# Construction des URLs possibles pour Hikvision
+# Nettoyage de l'IP au cas où l'utilisateur a mis http:// ou rtsp:// dans les options
+clean_ip = CAMERA_IP.replace("http://", "").replace("rtsp://", "").split('/')[0]
+
+# Construction des URLs correctes (Uniquement en HTTP pour les snapshots)
 SNAPSHOT_URLS = [
-    f"http://{CAMERA_IP}:{CAMERA_PORT}/ISAPI/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
-    f"http://{CAMERA_IP}:{CAMERA_PORT}/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
-    f"http://{CAMERA_IP}:{CAMERA_PORT}/ISAPI/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
-    f"http://{CAMERA_IP}:{CAMERA_PORT}/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
-    f"http://{CAMERA_IP}:{CAMERA_PORT}/cgi-bin/snapshot.cgi",
+    f"http://{clean_ip}:{CAMERA_PORT}/ISAPI/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{clean_ip}:{CAMERA_PORT}/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{clean_ip}:{CAMERA_PORT}/ISAPI/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{clean_ip}:{CAMERA_PORT}/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{clean_ip}:{CAMERA_PORT}/cgi-bin/snapshot.cgi",
 ]
 
 WORKING_URL = None
