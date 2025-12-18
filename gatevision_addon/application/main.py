@@ -1,17 +1,18 @@
 import cv2
-import pytesseract
+import easyocr
 import json
 import time
 import paho.mqtt.client as mqtt
 import os
 import sys
+import numpy as np
 
 def log(message):
     print(f"{message}", flush=True)
 
-log("--- [GATEVISION V1.2.6 - FULL HASS & SOLO MODE] ---")
+log("--- [GATEVISION V2.0 - DETECTION OPTIMISEE] ---")
 
-# 1. Chargement des options Home Assistant
+# 1. Chargement des options
 try:
     with open("/data/options.json", "r") as f:
         options = json.load(f)
@@ -28,15 +29,67 @@ MQTT_USER = options.get("mqtt_user", "")
 MQTT_PASS = options.get("mqtt_password", "")
 MQTT_TOPIC_CONTROL = options.get("mqtt_topic", "gate/control")
 MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
-
-# Topic pour le capteur Lovelace
 MQTT_TOPIC_SENSOR = "gatevision/last_plate"
 
-# Optimisation OpenCV pour flux RTSP sur Celeron
+# Initialisation EasyOCR (GPU si disponible)
+log("🧠 Chargement du moteur EasyOCR...")
+reader = easyocr.Reader(['en'], gpu=False)  # Mettre True si GPU disponible
+log("✅ EasyOCR prêt")
+
+# Optimisation RTSP
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
+# Variables pour détection de mouvement
+prev_frame = None
+motion_threshold = 1500  # Nombre de pixels qui ont bougé
+
+def detect_motion(frame):
+    """Détecte si quelque chose bouge dans l'image"""
+    global prev_frame
+    
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+    
+    if prev_frame is None:
+        prev_frame = gray
+        return False
+    
+    frame_delta = cv2.absdiff(prev_frame, gray)
+    thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+    thresh = cv2.dilate(thresh, None, iterations=2)
+    
+    motion_pixels = np.sum(thresh == 255)
+    prev_frame = gray
+    
+    return motion_pixels > motion_threshold
+
+def preprocess_for_plate(frame):
+    """Pré-traitement optimisé pour plaques d'immatriculation"""
+    # Conversion en niveaux de gris
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Égalisation d'histogramme pour gérer la luminosité
+    gray = cv2.equalizeHist(gray)
+    
+    # Débruitage léger
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    
+    # Augmentation du contraste
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(denoised)
+    
+    return enhanced
+
+def clean_plate_text(text):
+    """Nettoie le texte détecté"""
+    # Garde seulement alphanumériques et tirets
+    cleaned = "".join(c for c in text if c.isalnum() or c == '-').upper()
+    # Supprime les espaces multiples
+    cleaned = " ".join(cleaned.split())
+    return cleaned
+
 def send_update(plate, authorized=False):
-    """ Envoie les infos à Home Assistant via MQTT """
+    """Envoie les infos à Home Assistant via MQTT"""
     try:
         client = mqtt.Client()
         if MQTT_USER and MQTT_PASS:
@@ -44,7 +97,6 @@ def send_update(plate, authorized=False):
         
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         
-        # Données pour le panneau Lovelace
         data = {
             "plate": plate,
             "status": "Autorisé" if authorized else "Inconnu",
@@ -52,73 +104,105 @@ def send_update(plate, authorized=False):
         }
         client.publish(MQTT_TOPIC_SENSOR, json.dumps(data), retain=True)
         
-        # Si autorisé, on envoie aussi l'ordre d'ouverture
         if authorized:
-            log(f"🎯 MATCH : {plate}. Ouverture demandée.")
+            log(f"✅ AUTORISATION : {plate} → Ouverture")
             client.publish(MQTT_TOPIC_CONTROL, MQTT_PAYLOAD)
         
         client.disconnect()
     except Exception as e:
         log(f"❌ Erreur MQTT : {e}")
 
+def is_plate_authorized(detected_text):
+    """Vérifie si le texte contient une plaque autorisée"""
+    detected_clean = detected_text.replace(" ", "").replace("-", "").upper()
+    
+    for auth_plate in WHITELIST:
+        auth_clean = auth_plate.replace(" ", "").replace("-", "").upper()
+        
+        # Correspondance exacte ou partielle (au moins 85% des caractères)
+        if auth_clean in detected_clean or detected_clean in auth_clean:
+            similarity = len(auth_clean) / len(detected_clean) if detected_clean else 0
+            if similarity > 0.7:  # Au moins 70% de similarité
+                return True, auth_plate
+    
+    return False, None
+
 def start_detection():
     log(f"📸 Connexion caméra : {CAMERA_URL}")
     cap = cv2.VideoCapture(CAMERA_URL)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
+    cap.set(cv2.CAP_PROP_FPS, 15)  # Limiter à 15 FPS
+    
     if not cap.isOpened():
-        log("❌ Impossible de joindre la caméra.")
+        log("❌ Impossible de se connecter à la caméra")
         return
 
-    log("🚀 Analyse active. Prêt pour détection.")
-
+    log("🚀 Système actif - En attente de mouvement...")
+    
+    frame_count = 0
+    last_detection_time = 0
+    cooldown_period = 10  # Secondes entre deux détections de la même plaque
+    
     while True:
         ret, frame = cap.read()
         if not ret:
+            log("⚠️ Perte de connexion - Reconnexion...")
             time.sleep(5)
             cap = cv2.VideoCapture(CAMERA_URL)
             continue
-
-        # Analyse toutes les 2 secondes pour préserver le CPU
-        time.sleep(2)
-
-        # --- PRÉ-TRAITEMENT ---
+        
+        frame_count += 1
+        
+        # Analyse du mouvement toutes les 3 frames (5 fps)
+        if frame_count % 3 != 0:
+            continue
+        
+        # Détection de mouvement
+        if not detect_motion(frame):
+            continue
+        
+        log("🚗 Mouvement détecté - Analyse en cours...")
+        
+        # Zone d'intérêt plus large (toute la hauteur, centre horizontal)
         h, w = frame.shape[:2]
-        # On crop une bande centrale (15% à 85% de la hauteur)
-        roi = frame[int(h*0.15):int(h*0.85), 0:w]
+        roi = frame[0:h, int(w*0.1):int(w*0.9)]  # 80% de la largeur
         
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Adaptive threshold pour gérer les phares et reflets
-        processed = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
-        )
-
-        # --- OCR ---
-        # PSM 3 (Auto) + Whitelist pour vitesse
-        config = '--psm 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-        text = pytesseract.image_to_string(processed, config=config)
+        # Pré-traitement
+        processed = preprocess_for_plate(roi)
         
-        # Nettoyage texte
-        raw_text = "".join(e for e in text if e.isalnum()).upper()
-
-        if len(raw_text) >= 4:
-            # On vérifie si c'est dans la whitelist
-            found = False
-            for auth_plate in WHITELIST:
-                clean_auth = auth_plate.replace(" ", "").replace("-", "").upper()
-                
-                if clean_auth in raw_text:
-                    send_update(clean_auth, authorized=True)
-                    found = True
-                    time.sleep(15) # Pause après ouverture
-                    break
+        # OCR avec EasyOCR
+        try:
+            results = reader.readtext(processed)
             
-            # Si non autorisé, on met quand même à jour Lovelace
-            if not found and "SANRY" not in raw_text:
-                if len(raw_text) < 12: # On ignore les phrases trop longues
-                    log(f"🔍 Plaque inconnue : {raw_text}")
-                    send_update(raw_text, authorized=False)
+            for (bbox, text, confidence) in results:
+                if confidence < 0.3:  # Ignorer les détections peu fiables
+                    continue
+                
+                cleaned_text = clean_plate_text(text)
+                
+                # Filtrer les textes trop courts ou trop longs
+                if len(cleaned_text) < 4 or len(cleaned_text) > 12:
+                    continue
+                
+                log(f"🔍 Texte détecté : {cleaned_text} (confiance: {confidence:.2f})")
+                
+                # Vérifier si autorisé
+                authorized, matched_plate = is_plate_authorized(cleaned_text)
+                
+                current_time = time.time()
+                if authorized and (current_time - last_detection_time) > cooldown_period:
+                    send_update(matched_plate, authorized=True)
+                    last_detection_time = current_time
+                    time.sleep(15)  # Pause après ouverture
+                    break
+                elif not authorized:
+                    send_update(cleaned_text, authorized=False)
+        
+        except Exception as e:
+            log(f"❌ Erreur OCR : {e}")
+        
+        # Petite pause pour éviter la surcharge CPU
+        time.sleep(0.1)
 
 if __name__ == "__main__":
     try:
