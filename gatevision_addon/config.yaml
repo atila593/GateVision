@@ -1,7 +1,7 @@
 name: "GateVision"
-version: "2.1.0"
+version: "2.2.0"
 slug: "gatevision"
-description: "Reconnaissance de plaques par snapshot - Léger et fiable"
+description: "Reconnaissance de plaques avec authentification Digest"
 url: "https://github.com/atila593/GateVision"
 arch:
   - amd64
@@ -11,10 +11,12 @@ startup: application
 boot: auto
 host_network: true
 options:
-  snapshot_url: "http://192.168.1.28/ISAPI/Streaming/channels/102/picture"
-  snapshot_interval: 2
+  camera_ip: "192.168.1.28"
+  camera_port: 80
   camera_user: "admin"
   camera_password: "Olivier59"
+  snapshot_channel: "102"
+  snapshot_interval: 2
   authorized_plates:
     - "AB123CD"
   mqtt_broker: "core-mosquitto"
@@ -24,10 +26,12 @@ options:
   mqtt_topic: "gate/control"
   mqtt_payload: "ON"
 schema:
-  snapshot_url: str
+  camera_ip: str
+  camera_port: int
+  camera_user: str
+  camera_password: password
+  snapshot_channel: str
   snapshot_interval: int
-  camera_user: str?
-  camera_password: password?
   authorized_plates:
     - str
   mqtt_broker: str
