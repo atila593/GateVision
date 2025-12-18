@@ -5,6 +5,7 @@ FROM ${BUILD_FROM}
 # 1. Dépendances système
 # -----------------------------
 RUN apk add --no-cache \
+    py3-pip \
     py3-numpy \
     py3-opencv \
     ffmpeg \
@@ -29,7 +30,7 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
     torchvision
 
 # -----------------------------
-# 4. EasyOCR sans deps
+# 4. EasyOCR (sans dépendances)
 # -----------------------------
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     easyocr --no-deps \
@@ -44,7 +45,7 @@ easyocr.Reader(['fr'], gpu=False)
 EOF
 
 # -----------------------------
-# 6. App
+# 6. Application
 # -----------------------------
 COPY application/gatevision.py /gatevision.py
 CMD ["python3", "/gatevision.py"]
