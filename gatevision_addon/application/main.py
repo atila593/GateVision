@@ -3,13 +3,15 @@ import easyocr
 import json
 import time
 import paho.mqtt.client as mqtt
+import requests
+from requests.auth import HTTPDigestAuth
 import numpy as np
 import sys
 
 def log(message):
     print(f"{message}", flush=True)
 
-log("--- [GATEVISION V2.3 - RTSP MODE] ---")
+log("--- [GATEVISION V2.6 - HTTP DIGEST MODE] ---")
 
 # 1. Chargement des options
 try:
@@ -19,16 +21,20 @@ except Exception as e:
     log(f"❌ Erreur options : {e}")
     sys.exit(1)
 
-# --- CONFIGURATION RTSP ---
-# On construit l'URL exacte qui fonctionne chez vous
-CAMERA_USER = options.get("camera_user", "admin")
-CAMERA_PASS = options.get("camera_password", "Olivier59")
-CAMERA_IP = options.get("camera_ip", "192.168.1.28")
+# --- CONFIGURATION NETTOYÉE ---
+USER = options.get("camera_user", "admin")
+PASS = options.get("camera_password", "")
+# On ne garde que l'IP pure
+IP = options.get("camera_ip", "192.168.1.28").replace("http://", "").replace("rtsp://", "").split('@')[-1].split(':')[0]
+PORT = options.get("camera_port", 80)
+CHANNEL = options.get("snapshot_channel", "101")
 
-# L'URL que vous avez confirmée
-RTSP_URL = f"rtsp://{CAMERA_USER}:{CAMERA_PASS}@{CAMERA_IP}/h264:80/ISAPI/Streaming/Channels/101/picture"
+# L'URL standard Hikvision pour les images
+URL = f"http://{IP}:{PORT}/ISAPI/Streaming/channels/{CHANNEL}/picture"
 
-# Options MQTT
+log(f"📸 Mode Digest activé sur : {URL}")
+
+# MQTT
 WHITELIST = options.get("authorized_plates", [])
 MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
 MQTT_PORT = options.get("mqtt_port", 1883)
@@ -43,82 +49,52 @@ log("🧠 Chargement EasyOCR...")
 reader = easyocr.Reader(['en'], gpu=False, verbose=False)
 log("✅ EasyOCR prêt")
 
-def get_snapshot_rtsp():
-    """Capture une image depuis le flux RTSP via OpenCV"""
-    cap = cv2.VideoCapture(RTSP_URL)
-    if not cap.isOpened():
-        return None
-    
-    ret, frame = cap.read()
-    cap.release()
-    
-    if ret:
-        return frame
-    return None
-
-def is_plate_authorized(detected_text):
-    clean_detected = "".join(c for c in detected_text if c.isalnum()).upper()
-    for auth_plate in WHITELIST:
-        clean_auth = "".join(c for c in auth_plate if c.isalnum()).upper()
-        if clean_auth in clean_detected or clean_detected in clean_auth:
-            if len(clean_detected) >= 4:
-                return True, auth_plate
-    return False, None
-
-def send_update(plate, authorized=False):
+def get_snapshot_digest():
+    """Récupère l'image en utilisant l'authentification Digest"""
     try:
-        client = mqtt.Client()
-        if MQTT_USER and MQTT_PASS:
-            client.username_pw_set(MQTT_USER, MQTT_PASS)
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        
-        data = {
-            "plate": plate, 
-            "status": "✅ Autorisé" if authorized else "❌ Inconnu", 
-            "time": time.strftime("%H:%M:%S")
-        }
-        client.publish(MQTT_TOPIC_SENSOR, json.dumps(data), retain=True)
-        
-        if authorized:
-            log(f"🔓 OUVERTURE : {plate}")
-            client.publish(MQTT_TOPIC_CONTROL, MQTT_PAYLOAD)
-        client.disconnect()
+        response = requests.get(
+            URL, 
+            auth=HTTPDigestAuth(USER, PASS), 
+            timeout=10
+        )
+        if response.status_code == 200:
+            # Conversion du contenu binaire en image OpenCV
+            img_array = np.frombuffer(response.content, np.uint8)
+            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            return frame
+        else:
+            if response.status_code == 401:
+                log("⚠️ Erreur 401 : Authentification Digest échouée. Vérifiez utilisateur/pass.")
+            else:
+                log(f"⚠️ Erreur HTTP {response.status_code}")
+            return None
     except Exception as e:
-        log(f"❌ Erreur MQTT : {e}")
+        log(f"❌ Erreur de connexion : {e}")
+        return None
 
 def start_monitoring():
-    log(f"📸 Connexion au flux : {RTSP_URL}")
-    log("🚀 Surveillance active...")
-    
+    log("🚀 Surveillance active (Snapshot HTTP Digest)...")
     last_detection_time = 0
-    cooldown_period = 15
-
+    
     while True:
-        frame = get_snapshot_rtsp()
+        frame = get_snapshot_digest()
         
         if frame is not None:
-            # Prétraitement rapide
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # OCR sur l'image complète (ou zone centrale)
-            results = reader.readtext(gray, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-')
-            
+            # OCR
+            results = reader.readtext(frame)
             for (bbox, text, confidence) in results:
                 if confidence > 0.4:
-                    cleaned = text.strip().upper()
+                    cleaned = "".join(c for c in text if c.isalnum()).upper()
                     if len(cleaned) >= 5:
-                        log(f"🔍 Détecté: {cleaned} ({confidence:.2f})")
-                        authorized, matched = is_plate_authorized(cleaned)
+                        log(f"🔍 Plaque : {cleaned} ({confidence:.2f})")
                         
-                        current_time = time.time()
-                        if authorized and (current_time - last_detection_time) > cooldown_period:
-                            send_update(matched, True)
-                            last_detection_time = current_time
-                            time.sleep(5) # Petite pause après succès
-                        elif not authorized:
-                            send_update(cleaned, False)
+                        is_auth = any(auth.replace(" ", "").upper() in cleaned for auth in WHITELIST)
+                        if is_auth and (time.time() - last_detection_time) > 20:
+                            log(f"✅ ACCÈS AUTORISÉ : {cleaned}")
+                            # --- INSERTION APPEL MQTT ICI ---
+                            last_detection_time = time.time()
         
-        time.sleep(2) # Intervalle entre deux captures
+        time.sleep(2) # On prend une photo toutes les 2 secondes
 
 if __name__ == "__main__":
     start_monitoring()
