@@ -1,9 +1,5 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:python3.11
-FROM ${BUILD_FROM}
+FROM ghcr.io/home-assistant/amd64-base:python3.11
 
-# -----------------------------
-# 1. Dépendances système
-# -----------------------------
 RUN apk add --no-cache \
     py3-pip \
     py3-numpy \
@@ -15,39 +11,18 @@ RUN apk add --no-cache \
     openblas \
     libstdc++
 
-# -----------------------------
-# 2. Variables CPU only
-# -----------------------------
 ENV CUDA_VISIBLE_DEVICES=""
 ENV TORCH_HOME=/opt/torch
 ENV EASYOCR_CACHE_DIR=/opt/easyocr
 
-# -----------------------------
-# 3. Torch (wheels Home Assistant)
-# -----------------------------
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     torch \
     torchvision
 
-# -----------------------------
-# 4. EasyOCR (sans dépendances)
-# -----------------------------
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     easyocr --no-deps \
     paho-mqtt
 
-# -----------------------------
-# 5. Préchargement modèles OCR
-# -----------------------------
-RUN python3 - << 'EOF'
-import easyocr
-easyocr.Reader(['fr'], gpu=False)
-EOF
-
-# -----------------------------
-# 6. Application
-# -----------------------------
 COPY application/gatevision.py /gatevision.py
 CMD ["python3", "/gatevision.py"]
-
 
