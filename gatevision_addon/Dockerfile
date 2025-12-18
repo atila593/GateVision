@@ -16,6 +16,7 @@ WORKDIR /app
 # Installation des bibliothèques Python
 RUN pip install --no-cache-dir \
     opencv-python-headless==4.8.0.76 \
+    Pillow==9.5.0 \
     easyocr==1.7.0 \
     paho-mqtt==1.6.1 \
     requests==2.31.0 \
