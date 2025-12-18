@@ -1,7 +1,7 @@
 name: "GateVision"
-version: "1.0.5"
+version: "2.1.0"
 slug: "gatevision"
-description: "Reconnaissance de plaques universelle pour portail et garage via MQTT"
+description: "Reconnaissance de plaques par snapshot - Léger et fiable"
 url: "https://github.com/atila593/GateVision"
 arch:
   - amd64
@@ -10,12 +10,13 @@ arch:
 startup: application
 boot: auto
 host_network: true
-privileged: ["SYS_RAWIO"]
 options:
-  camera_url: "rtsp://admin:password@192.168.1.XX:554/live"
+  snapshot_url: "http://192.168.1.28/ISAPI/Streaming/channels/102/picture"
+  snapshot_interval: 2
+  camera_user: "admin"
+  camera_password: "Olivier59"
   authorized_plates:
-    - "AA123BB"
-  output_method: "MQTT"
+    - "AB123CD"
   mqtt_broker: "core-mosquitto"
   mqtt_port: 1883
   mqtt_user: ""
@@ -23,10 +24,12 @@ options:
   mqtt_topic: "gate/control"
   mqtt_payload: "ON"
 schema:
-  camera_url: str
+  snapshot_url: str
+  snapshot_interval: int
+  camera_user: str?
+  camera_password: password?
   authorized_plates:
     - str
-  output_method: str
   mqtt_broker: str
   mqtt_port: int
   mqtt_user: str?
