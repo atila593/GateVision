@@ -1,40 +1,33 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
-# 1. Installation des paquets via APK (Alpine)
-# On inclut py3-pip explicitement
+# 1. Dépendances système minimales
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    python3-dev \
     ffmpeg \
     libjpeg-turbo \
     libpng \
     tiff \
     openblas \
     libstdc++ \
-    g++ \
-    make \
-    zlib-dev \
-    jpeg-dev \
-    musl-dev \
-    linux-headers
+    zlib \
+    jpeg
 
-# 2. Installation de Pip et des outils de build
-# On utilise 'python3 -m pip' pour contourner le problème du "not found"
+# 2. On installe les bibliothèques une par une
+# On force des versions stables pour éviter les conflits de build récents
 RUN python3 -m pip install --upgrade pip --break-system-packages
-RUN python3 -m pip install --no-cache-dir --break-system-packages setuptools==70.0.0 wheel
 
-# 3. Installation d'OpenCV et EasyOCR
-# Cette étape est longue, c'est normal
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    opencv-python-headless \
-    easyocr \
-    paho-mqtt \
-    numpy
+# On installe numpy en premier (souvent requis par les autres)
+RUN python3 -m pip install --no-cache-dir --break-system-packages numpy
 
-# 4. Copie du script
+# 3. INSTALLATION D'OPENCV (La partie critique)
+# On utilise la version pré-compilée si possible ou on force une version compatible
+RUN python3 -m pip install --no-cache-dir --break-system-packages opencv-python-headless==4.10.0.84
+
+# 4. INSTALLATION DE EASYOCR
+RUN python3 -m pip install --no-cache-dir --break-system-packages easyocr paho-mqtt
+
+# 5. Finalisation
 COPY application/gatevision.py /gatevision.py
-
-# 5. Lancement
 CMD [ "python3", "/gatevision.py" ]
