@@ -1,5 +1,5 @@
 name: "GateVision"
-version: "2.2.0"
+version: "2.2.1"
 slug: "gatevision"
 description: "Reconnaissance de plaques avec authentification Digest"
 url: "https://github.com/atila593/GateVision"
