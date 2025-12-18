@@ -1,7 +1,7 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
-# 1. Installation des dépendances système et de Python + Pip
+# 1. Installation des dépendances système
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -13,18 +13,20 @@ RUN apk add --no-cache \
     libstdc++ \
     g++ \
     make \
-    python3-dev
+    python3-dev \
+    zlib-dev \
+    jpeg-dev
 
 # 2. Installation des bibliothèques Python
-# On utilise "python3 -m pip" pour être sûr de pointer vers le bon binaire
-RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install --no-cache-dir \
+# On ajoute --break-system-packages pour autoriser l'installation dans l'image
+RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade pip && \
+    python3 -m pip install --no-cache-dir --break-system-packages \
     opencv-python-headless \
     easyocr \
     paho-mqtt \
     numpy
 
-# 3. Copie du script (depuis le dossier application)
+# 3. Copie du script
 COPY application/gatevision.py /gatevision.py
 
 # 4. Commande de lancement
