@@ -4,14 +4,14 @@ import json
 import time
 import paho.mqtt.client as mqtt
 import requests
+from requests.auth import HTTPDigestAuth
 import numpy as np
 import sys
-from io import BytesIO
 
 def log(message):
     print(f"{message}", flush=True)
 
-log("--- [GATEVISION V2.1 - MODE SNAPSHOT] ---")
+log("--- [GATEVISION V2.2 - DIGEST AUTH] ---")
 
 # 1. Chargement des options
 try:
@@ -22,8 +22,13 @@ except Exception as e:
     sys.exit(1)
 
 # Variables de configuration
-SNAPSHOT_URL = options.get("snapshot_url", "")
-SNAPSHOT_INTERVAL = options.get("snapshot_interval", 2)  # Secondes entre chaque snapshot
+CAMERA_IP = options.get("camera_ip", "192.168.1.28")
+CAMERA_PORT = options.get("camera_port", 80)
+CAMERA_USER = options.get("camera_user", "admin")
+CAMERA_PASS = options.get("camera_password", "")
+SNAPSHOT_CHANNEL = options.get("snapshot_channel", "102")
+SNAPSHOT_INTERVAL = options.get("snapshot_interval", 2)
+
 WHITELIST = options.get("authorized_plates", [])
 MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
 MQTT_PORT = options.get("mqtt_port", 1883)
@@ -33,46 +38,87 @@ MQTT_TOPIC_CONTROL = options.get("mqtt_topic", "gate/control")
 MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
 MQTT_TOPIC_SENSOR = "gatevision/last_plate"
 
-# Auth pour la caméra si nécessaire
-CAM_USER = options.get("camera_user", "")
-CAM_PASS = options.get("camera_password", "")
+# Construction des URLs possibles pour Hikvision
+SNAPSHOT_URLS = [
+    f"http://{CAMERA_IP}:{CAMERA_PORT}/ISAPI/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{CAMERA_IP}:{CAMERA_PORT}/Streaming/channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{CAMERA_IP}:{CAMERA_PORT}/ISAPI/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{CAMERA_IP}:{CAMERA_PORT}/Streaming/Channels/{SNAPSHOT_CHANNEL}/picture",
+    f"http://{CAMERA_IP}:{CAMERA_PORT}/cgi-bin/snapshot.cgi",
+]
+
+WORKING_URL = None
 
 # Initialisation EasyOCR
-log("🧠 Chargement EasyOCR (peut prendre 30s au premier lancement)...")
+log("🧠 Chargement EasyOCR...")
 reader = easyocr.Reader(['en'], gpu=False, verbose=False)
 log("✅ EasyOCR prêt")
 
 # Variables globales
 prev_frame_gray = None
 last_detection_time = 0
-cooldown_period = 15  # Secondes avant de réautoriser la même plaque
+cooldown_period = 15
 
-def get_snapshot():
-    """Récupère un snapshot depuis la caméra"""
-    try:
-        if CAM_USER and CAM_PASS:
+def find_working_url():
+    """Teste toutes les URLs possibles et trouve celle qui fonctionne"""
+    global WORKING_URL
+    
+    log("🔍 Recherche de l'URL snapshot fonctionnelle...")
+    
+    for url in SNAPSHOT_URLS:
+        try:
+            log(f"   Test: {url}")
             response = requests.get(
-                SNAPSHOT_URL, 
-                auth=(CAM_USER, CAM_PASS),
+                url,
+                auth=HTTPDigestAuth(CAMERA_USER, CAMERA_PASS),
                 timeout=5
             )
-        else:
-            response = requests.get(SNAPSHOT_URL, timeout=5)
+            
+            if response.status_code == 200 and len(response.content) > 1000:
+                # Vérifier que c'est bien une image
+                img_array = np.frombuffer(response.content, np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                
+                if frame is not None:
+                    WORKING_URL = url
+                    log(f"✅ URL fonctionnelle trouvée: {url}")
+                    return True
+        except Exception as e:
+            log(f"   ❌ Échec: {str(e)[:50]}")
+            continue
+    
+    log("❌ Aucune URL snapshot n'a fonctionné")
+    log("")
+    log("🔧 SOLUTIONS:")
+    log("1. Connectez-vous à votre caméra: http://192.168.1.28")
+    log("2. Allez dans: Configuration > Network > Advanced Settings")
+    log("3. Changez 'Web Authentication' vers 'digest/basic'")
+    log("4. Dans Integration Protocol, activez 'Enable Hikvision-CGI'")
+    log("5. Redémarrez la caméra")
+    return False
+
+def get_snapshot():
+    """Récupère un snapshot depuis la caméra avec authentification digest"""
+    try:
+        response = requests.get(
+            WORKING_URL,
+            auth=HTTPDigestAuth(CAMERA_USER, CAMERA_PASS),
+            timeout=5
+        )
         
         if response.status_code == 200:
-            # Conversion bytes → numpy array → image OpenCV
             img_array = np.frombuffer(response.content, np.uint8)
             frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             return frame
         else:
-            log(f"⚠️ HTTP {response.status_code} lors de la récupération du snapshot")
+            log(f"⚠️ HTTP {response.status_code}")
             return None
     except Exception as e:
         log(f"❌ Erreur snapshot : {e}")
         return None
 
 def detect_motion(frame):
-    """Détecte si quelque chose a bougé depuis la dernière image"""
+    """Détecte si quelque chose a bougé"""
     global prev_frame_gray
     
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -82,7 +128,6 @@ def detect_motion(frame):
         prev_frame_gray = gray
         return False
     
-    # Différence entre les deux images
     frame_delta = cv2.absdiff(prev_frame_gray, gray)
     thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
     thresh = cv2.dilate(thresh, None, iterations=2)
@@ -90,26 +135,20 @@ def detect_motion(frame):
     motion_pixels = np.sum(thresh == 255)
     prev_frame_gray = gray
     
-    # Seuil : au moins 2000 pixels ont bougé
     if motion_pixels > 2000:
-        log(f"🚗 Mouvement : {motion_pixels} pixels")
+        log(f"🚗 Mouvement détecté ({motion_pixels} px)")
         return True
     
     return False
 
 def preprocess_for_plate(frame):
-    """Améliore l'image pour la lecture de plaque"""
-    # Zone d'intérêt (optionnel, pour focus sur une zone)
+    """Améliore l'image pour OCR"""
     h, w = frame.shape[:2]
     roi = frame[int(h*0.2):int(h*0.8), int(w*0.1):int(w*0.9)]
     
-    # Conversion en gris
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    
-    # Égalisation d'histogramme pour gérer la luminosité
     gray = cv2.equalizeHist(gray)
     
-    # Augmentation du contraste
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     enhanced = clahe.apply(gray)
     
@@ -121,25 +160,23 @@ def clean_plate_text(text):
     return cleaned.strip()
 
 def is_plate_authorized(detected_text):
-    """Vérifie si une plaque est dans la whitelist"""
+    """Vérifie si une plaque est autorisée"""
     detected_clean = detected_text.replace(" ", "").replace("-", "").upper()
     
     for auth_plate in WHITELIST:
         auth_clean = auth_plate.replace(" ", "").replace("-", "").upper()
         
-        # Correspondance exacte ou partielle
         if auth_clean in detected_clean or detected_clean in auth_clean:
-            # Calcul de similarité
             len_min = min(len(auth_clean), len(detected_clean))
             len_max = max(len(auth_clean), len(detected_clean))
             
-            if len_min / len_max > 0.7:  # 70% de similarité minimum
+            if len_min / len_max > 0.7:
                 return True, auth_plate
     
     return False, None
 
 def send_update(plate, authorized=False):
-    """Envoie l'info à Home Assistant via MQTT"""
+    """Envoie l'info à Home Assistant"""
     try:
         client = mqtt.Client()
         if MQTT_USER and MQTT_PASS:
@@ -163,32 +200,26 @@ def send_update(plate, authorized=False):
         log(f"❌ Erreur MQTT : {e}")
 
 def analyze_frame(frame):
-    """Analyse une image pour y trouver une plaque"""
+    """Analyse une image"""
     global last_detection_time
     
-    # Pré-traitement
     processed = preprocess_for_plate(frame)
     
     try:
-        # OCR avec EasyOCR
         results = reader.readtext(processed, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-')
         
         for (bbox, text, confidence) in results:
-            # Ignorer les détections peu fiables
             if confidence < 0.4:
                 continue
             
             cleaned = clean_plate_text(text)
             
-            # Filtrer les textes trop courts/longs
             if len(cleaned) < 5 or len(cleaned) > 12:
                 continue
             
-            log(f"🔍 Détecté: '{cleaned}' (confiance: {confidence:.2f})")
+            log(f"🔍 Détecté: '{cleaned}' ({confidence:.2f})")
             
-            # Vérifier si autorisé
             authorized, matched = is_plate_authorized(cleaned)
-            
             current_time = time.time()
             
             if authorized and (current_time - last_detection_time) > cooldown_period:
@@ -204,44 +235,48 @@ def analyze_frame(frame):
     return False
 
 def start_monitoring():
-    """Boucle principale : snapshot + analyse"""
-    log(f"📸 URL Snapshot : {SNAPSHOT_URL}")
-    log(f"⏱️  Interval : {SNAPSHOT_INTERVAL}s")
+    """Boucle principale"""
+    if not find_working_url():
+        log("")
+        log("⏸️  En pause - Impossible de se connecter à la caméra")
+        log("   Vérifiez la configuration et redémarrez l'addon")
+        time.sleep(3600)  # Attendre 1h
+        return
+    
+    log(f"📸 URL: {WORKING_URL}")
+    log(f"⏱️  Intervalle: {SNAPSHOT_INTERVAL}s")
+    log(f"📋 Plaques autorisées: {', '.join(WHITELIST)}")
     log("🚀 Surveillance active...")
     
     consecutive_errors = 0
-    max_errors = 5
     
     while True:
-        # Récupération du snapshot
         frame = get_snapshot()
         
         if frame is None:
             consecutive_errors += 1
-            if consecutive_errors >= max_errors:
-                log(f"❌ Trop d'erreurs consécutives ({max_errors}). Vérifiez l'URL.")
+            if consecutive_errors >= 10:
+                log(f"❌ Trop d'erreurs. Vérifiez la caméra.")
+                consecutive_errors = 0
             time.sleep(SNAPSHOT_INTERVAL)
             continue
         
-        consecutive_errors = 0  # Reset compteur d'erreurs
+        consecutive_errors = 0
         
-        # Détection de mouvement
         if detect_motion(frame):
-            # Analyse de la plaque
             opened = analyze_frame(frame)
             
             if opened:
-                log("⏸️  Pause de 15s après ouverture...")
+                log("⏸️  Pause 15s après ouverture")
                 time.sleep(15)
         
-        # Attendre avant le prochain snapshot
         time.sleep(SNAPSHOT_INTERVAL)
 
 if __name__ == "__main__":
     try:
         start_monitoring()
     except KeyboardInterrupt:
-        log("🛑 Arrêt demandé")
+        log("🛑 Arrêt")
     except Exception as e:
         log(f"❌ Erreur fatale : {e}")
         sys.exit(1)
