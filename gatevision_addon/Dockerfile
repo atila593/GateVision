@@ -17,7 +17,7 @@ RUN apk add --no-cache \
     libstdc++
 
 # -----------------------------
-# 2. Variables OCR / CPU
+# 2. Forcer CPU / chemins cache
 # -----------------------------
 ENV CUDA_VISIBLE_DEVICES=""
 ENV TORCH_HOME=/opt/torch
@@ -25,29 +25,31 @@ ENV EASYOCR_MODULE_PATH=/opt/easyocr
 ENV EASYOCR_CACHE_DIR=/opt/easyocr
 
 # -----------------------------
-# 3. Dépendances Python
-# ⚠️ pip NON upgradé (bug Alpine)
+# 3. Installer TORCH (obligatoire AVANT EasyOCR)
+# ⚠️ Wheels Home Assistant musllinux
 # -----------------------------
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    easyocr \
+    torch \
+    torchvision
+
+# -----------------------------
+# 4. Installer EasyOCR SANS dépendances
+# -----------------------------
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    easyocr --no-deps \
     paho-mqtt
 
 # -----------------------------
-# 4. Pré-téléchargement modèles EasyOCR (CPU)
-# ⚠️ Adapter les langues si besoin
+# 5. Pré-téléchargement modèles OCR (CPU)
 # -----------------------------
 RUN python3 - << 'EOF'
 import easyocr
-easyocr.Reader(
-    ['en'],        # 👉 mets ['fr'] ou ['en','fr'] si besoin
-    gpu=False
-)
+easyocr.Reader(['en'], gpu=False)
 EOF
 
 # -----------------------------
-# 5. Application
+# 6. Application
 # -----------------------------
 COPY application/gatevision.py /gatevision.py
-
 CMD ["python3", "/gatevision.py"]
 
