@@ -1,109 +1,73 @@
-import cv2
-import easyocr
-import time
-import paho.mqtt.client as mqtt
-import numpy as np
-import json
+import appdaemon.plugins.hass.hassapi as hass
+import subprocess
 import sys
+import os
 
-def log(message):
-    print(f"{message}", flush=True)
+# 1. Fonction de réparation automatique pour installer les dépendances
+def install_fix():
+    print("Vérification et installation des dépendances (cela peut prendre 5-10 min)...")
+    packages = [
+        "paho-mqtt",
+        "opencv-python-headless",
+        "easyocr --no-deps",
+        "torch --index-url https://download.pytorch.org/whl/cpu"
+    ]
+    for pkg in packages:
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", pkg])
+        except Exception as e:
+            print(f"Erreur lors de l'installation de {pkg}: {e}")
 
-log("--- [GATEVISION V3.0 - UNIVERSAL ADDON] ---")
-
-# 1. Chargement des options depuis HA
+# Tentative d'importation, sinon on lance l'installation
 try:
-    with open("/data/options.json", "r") as f:
-        options = json.load(f)
-except Exception as e:
-    log(f"❌ Erreur de lecture des options : {e}")
-    sys.exit(1)
+    import easyocr
+    import cv2
+    import numpy as np
+except ImportError:
+    install_fix()
+    import easyocr
+    import cv2
+    import numpy as np
 
-# Variables de configuration
-RTSP_URL = options.get("rtsp_url")
-WHITELIST = options.get("authorized_plates", [])
-MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
-MQTT_PORT = options.get("mqtt_port", 1883)
-MQTT_USER = options.get("mqtt_user", "")
-MQTT_PASS = options.get("mqtt_password", "")
+class GateVision(hass.Hass):
 
-# Nouvelle variable pour l'entité
-TARGET_TOPIC = options.get("mqtt_topic", "gate/control")
-PAYLOAD = options.get("mqtt_payload", "ON")
-SENSITIVITY = options.get("motion_sensitivity", 5000)
-
-log(f"📋 Plaques autorisées : {', '.join(WHITELIST)}")
-log(f"🎯 Entité cible : {TARGET_TOPIC}")
-
-# Initialisation EasyOCR
-log("🧠 Chargement EasyOCR (CPU)...")
-reader = easyocr.Reader(['en'], gpu=False)
-log("✅ Système prêt.")
-
-def send_open_command(plate):
-    """Envoie la commande MQTT à l'entité choisie"""
-    try:
-        client = mqtt.Client()
-        if MQTT_USER and MQTT_PASS:
-            client.username_pw_set(MQTT_USER, MQTT_PASS)
+    def initialize(self):
+        self.log("GateVision OCR démarré.")
+        # Liste des plaques VIP (modifiez-les ici)
+        self.plaques_vip = ["AA123BB", "CC456DD", "GATE123"]
         
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        log(f"🔓 ACCÈS VALIDÉ pour {plate} -> Commande envoyée à {TARGET_TOPIC}")
-        client.publish(TARGET_TOPIC, PAYLOAD)
+        # On écoute les changements sur l'entité de votre caméra ou un déclencheur
+        # Remplacez 'binary_sensor.portail_mouvement' par votre capteur
+        self.listen_state(self.analyser_plaque, "binary_sensor.portail_mouvement", new="on")
         
-        # On publie aussi l'info pour un capteur de log
-        client.publish("gatevision/last_event", json.dumps({"plate": plate, "action": "OPEN"}), retain=True)
-        client.disconnect()
-    except Exception as e:
-        log(f"❌ Erreur MQTT : {e}")
+        # Initialisation du lecteur OCR (en mode CPU)
+        self.reader = easyocr.Reader(['fr', 'en'], gpu=False, model_storage_directory='/opt/easyocr')
 
-def start_monitoring():
-    cap = cv2.VideoCapture(RTSP_URL)
-    avg = None
-    last_detection_time = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            log("⚠️ Flux perdu. Tentative de reconnexion...")
-            cap = cv2.VideoCapture(RTSP_URL)
-            time.sleep(5)
-            continue
-
-        # DÉTECTION DE MOUVEMENT (Léger)
-        small_frame = cv2.resize(frame, (500, 300))
-        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
-
-        if avg is None:
-            avg = gray.copy().astype("float")
-            continue
-
-        cv2.accumulateWeighted(gray, avg, 0.5)
-        frameDelta = cv2.absdiff(gray, cv2.convertScaleAbs(avg))
-        thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
+    def analyser_plaque(self, entity, attribute, old, new, kwargs):
+        self.log("Mouvement détecté, capture de l'image...")
         
-        # Si mouvement détecté (ex: une voiture entre dans le cadre)
-        if np.sum(thresh) > SENSITIVITY:
-            now = time.time()
-            if now - last_detection_time > 10: # Évite de scanner 100 fois la même voiture
-                log("🚗 Mouvement détecté ! Analyse OCR...")
-                
-                results = reader.readtext(frame)
-                for (bbox, text, confidence) in results:
-                    if confidence > 0.4:
-                        cleaned = "".join(c for c in text if c.isalnum()).upper()
-                        log(f"🔍 Plaque lue : {cleaned} ({int(confidence*100)}%)")
-                        
-                        # Vérification Whitelist
-                        if any(auth.replace(" ","") in cleaned for auth in WHITELIST):
-                            send_open_command(cleaned)
-                            last_detection_time = now
-                            break # On arrête l'analyse pour cette image
+        # 2. Capture de l'image depuis Home Assistant
+        # Remplacez 'camera.votre_camera' par votre entité caméra
+        image_path = "/tmp/snapshot.jpg"
+        self.call_service("camera/snapshot", entity_id="camera.votre_camera", filename=image_path)
+        
+        # Attendre un court instant pour que le fichier soit écrit
+        import time
+        time.sleep(1)
 
-        # Vider le buffer RTSP pour rester en temps réel
-        for _ in range(15): cap.grab()
-        time.sleep(0.1)
+        if os.path.exists(image_path):
+            results = self.reader.readtext(image_path)
+            self.log(f"Résultats OCR : {results}")
 
-if __name__ == "__main__":
-    start_monitoring()
+            for (bbox, text, prob) in results:
+                plaque = text.replace(" ", "").upper()
+                self.log(f"Plaque détectée : {plaque} (Certitude: {prob})")
+
+                if plaque in self.plaques_vip:
+                    self.log(f"ACCÈS ACCORDÉ pour la plaque : {plaque}")
+                    # 3. Action : Ouvrir le portail
+                    self.turn_on("switch.portail")
+                    self.notify(f"Portail ouvert pour {plaque}", title="GateVision")
+                    break
+        else:
+            self.log("Erreur : Impossible de trouver la capture image.")
