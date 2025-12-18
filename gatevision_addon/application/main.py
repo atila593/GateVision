@@ -38,7 +38,7 @@ MQTT_TOPIC = options.get("mqtt_topic", "gate/control")
 MQTT_PAYLOAD = options.get("mqtt_payload", "ON")
 
 # URL Snapshot Hikvision
-URL = f"http://{IP}:{PORT}/ISAPI/Streaming/channels/{CHANNEL}/picture"
+URL = f"http://{IP}:{PORT}/Streaming/channels/{CHANNEL}/picture"
 
 log(f"📸 Connexion caméra : {IP}:{PORT} (Canal {CHANNEL})")
 log(f"📡 MQTT Broker : {MQTT_BROKER}")
