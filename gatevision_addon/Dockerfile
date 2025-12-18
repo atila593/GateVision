@@ -1,8 +1,10 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.11-alpine3.18
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
-# Installation des dépendances système pour OpenCV et la compilation
+# 1. Installation des dépendances système et de Python + Pip
 RUN apk add --no-cache \
+    python3 \
+    py3-pip \
     ffmpeg \
     libjpeg-turbo \
     libpng \
@@ -13,15 +15,17 @@ RUN apk add --no-cache \
     make \
     python3-dev
 
-# Installation des bibliothèques Python
-RUN pip3 install --no-cache-dir \
+# 2. Installation des bibliothèques Python
+# On utilise "python3 -m pip" pour être sûr de pointer vers le bon binaire
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install --no-cache-dir \
     opencv-python-headless \
     easyocr \
     paho-mqtt \
     numpy
 
-# Copie du script vers l'addon
+# 3. Copie du script (depuis le dossier application)
 COPY application/gatevision.py /gatevision.py
 
-# Commande de lancement (remplace le run.sh)
+# 4. Commande de lancement
 CMD [ "python3", "/gatevision.py" ]
