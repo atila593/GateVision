@@ -1,36 +1,40 @@
-# Utilisation du tag 'latest' qui contient Python 3.12 (standard actuel sur HA)
+# Utilisation de la base Debian pour éviter le bug Alpine/OpenCV
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
-# 1. Installation des paquets système PRÉ-COMPILÉS (Très important pour OpenCV)
-RUN apk add --no-cache \
+# 1. Installation des dépendances via APT (Debian)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    py3-pip \
-    py3-numpy \
-    py3-opencv \
+    python3-pip \
+    python3-dev \
     ffmpeg \
-    libjpeg-turbo \
-    libpng \
-    tiff \
-    openblas \
-    libstdc++
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# 2. Configuration des variables d'environnement
+# 2. Configuration environnement
 ENV CUDA_VISIBLE_DEVICES=""
 ENV TORCH_HOME=/opt/torch
 ENV EASYOCR_CACHE_DIR=/opt/easyocr
 
-# 3. Installation de PyTorch et EasyOCR
-# On installe 'torch' et 'torchvision' séparément car ils sont très lourds
+# 3. Installation des paquets Python
+# On utilise --break-system-packages car c'est requis dans les conteneurs HA
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# 4. Installation de EasyOCR sans réinstaller Numpy/OpenCV
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    easyocr \
+    numpy \
+    opencv-python-headless \
     paho-mqtt
 
-# 5. Finalisation
+# 4. Installation de Torch (CPU uniquement pour la légèreté)
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# 5. Installation de EasyOCR
+RUN python3 -m pip install --no-cache-dir --break-system-packages easyocr
+
+# 6. Copie et lancement
 COPY application/gatevision.py /gatevision.py
 CMD ["python3", "/gatevision.py"]
