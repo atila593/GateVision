@@ -1,42 +1,32 @@
-name: "GateVision"
-version: "2.2.5"
-slug: "gatevision"
-description: "Reconnaissance de plaques avec authentification Digest"
-url: "https://github.com/atila593/GateVision"
+name: "GateVision OCR"
+version: "3.0.0"
+slug: "gatevision_ocr"
+description: "Reconnaissance de plaques universelle via RTSP avec détection de mouvement."
 arch:
+  - aarch64
   - amd64
   - armv7
-  - aarch64
-startup: application
-boot: auto
-host_network: true
+init: false
 options:
-  camera_ip: "192.168.1.28"
-  camera_port: 80
-  camera_user: "admin"
-  camera_password: "Olivier59"
-  snapshot_channel: "102"
-  snapshot_interval: 2
+  rtsp_url: "rtsp://admin:password@192.168.1.28:554/Streaming/Channels/102"
+  motion_sensitivity: 5000
   authorized_plates:
-    - "AB123CD"
+    - "GT033KV"
+    - "DL907HB"
+  mqtt_topic: "homeassistant/switch/portail/set"
+  mqtt_payload: "ON"
   mqtt_broker: "core-mosquitto"
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
-  mqtt_topic: "gate/control"
-  mqtt_payload: "ON"
 schema:
-  camera_ip: str
-  camera_port: int
-  camera_user: str
-  camera_password: password
-  snapshot_channel: str
-  snapshot_interval: int
+  rtsp_url: str
+  motion_sensitivity: int
   authorized_plates:
     - str
+  mqtt_topic: str
+  mqtt_payload: str
   mqtt_broker: str
   mqtt_port: int
   mqtt_user: str?
-  mqtt_password: password?
-  mqtt_topic: str
-  mqtt_payload: str
+  mqtt_password: str?
