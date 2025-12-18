@@ -4,37 +4,73 @@ import time
 import paho.mqtt.client as mqtt
 import numpy as np
 import json
+import sys
 
-# --- CONFIGURATION ---
+def log(message):
+    print(f"{message}", flush=True)
+
+log("--- [GATEVISION V3.0 - UNIVERSAL ADDON] ---")
+
+# 1. Chargement des options depuis HA
 try:
     with open("/data/options.json", "r") as f:
         options = json.load(f)
-except:
-    options = {}
+except Exception as e:
+    log(f"❌ Erreur de lecture des options : {e}")
+    sys.exit(1)
 
-RTSP_URL = options.get("rtsp_url", "rtsp://admin:password@192.168.1.28:554/Streaming/Channels/102")
+# Variables de configuration
+RTSP_URL = options.get("rtsp_url")
 WHITELIST = options.get("authorized_plates", [])
 MQTT_BROKER = options.get("mqtt_broker", "core-mosquitto")
-MQTT_TOPIC = options.get("mqtt_topic", "gate/control")
+MQTT_PORT = options.get("mqtt_port", 1883)
+MQTT_USER = options.get("mqtt_user", "")
+MQTT_PASS = options.get("mqtt_password", "")
 
-print("🧠 Chargement EasyOCR...")
+# Nouvelle variable pour l'entité
+TARGET_TOPIC = options.get("mqtt_topic", "gate/control")
+PAYLOAD = options.get("mqtt_payload", "ON")
+SENSITIVITY = options.get("motion_sensitivity", 5000)
+
+log(f"📋 Plaques autorisées : {', '.join(WHITELIST)}")
+log(f"🎯 Entité cible : {TARGET_TOPIC}")
+
+# Initialisation EasyOCR
+log("🧠 Chargement EasyOCR (CPU)...")
 reader = easyocr.Reader(['en'], gpu=False)
-print("✅ Système prêt. En attente de mouvement...")
+log("✅ Système prêt.")
+
+def send_open_command(plate):
+    """Envoie la commande MQTT à l'entité choisie"""
+    try:
+        client = mqtt.Client()
+        if MQTT_USER and MQTT_PASS:
+            client.username_pw_set(MQTT_USER, MQTT_PASS)
+        
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        log(f"🔓 ACCÈS VALIDÉ pour {plate} -> Commande envoyée à {TARGET_TOPIC}")
+        client.publish(TARGET_TOPIC, PAYLOAD)
+        
+        # On publie aussi l'info pour un capteur de log
+        client.publish("gatevision/last_event", json.dumps({"plate": plate, "action": "OPEN"}), retain=True)
+        client.disconnect()
+    except Exception as e:
+        log(f"❌ Erreur MQTT : {e}")
 
 def start_monitoring():
     cap = cv2.VideoCapture(RTSP_URL)
     avg = None
-    last_ocr_time = 0
+    last_detection_time = 0
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            log("⚠️ Flux perdu. Tentative de reconnexion...")
             cap = cv2.VideoCapture(RTSP_URL)
             time.sleep(5)
             continue
 
-        # 1. PRÉ-TRAITEMENT LÉGER POUR LA DÉTECTION DE MOUVEMENT
-        # On réduit l'image pour que le calcul soit instantané
+        # DÉTECTION DE MOUVEMENT (Léger)
         small_frame = cv2.resize(frame, (500, 300))
         gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -43,41 +79,30 @@ def start_monitoring():
             avg = gray.copy().astype("float")
             continue
 
-        # On calcule la différence entre l'image actuelle et la moyenne
         cv2.accumulateWeighted(gray, avg, 0.5)
         frameDelta = cv2.absdiff(gray, cv2.convertScaleAbs(avg))
         thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
         
-        # 2. SI MOUVEMENT DÉTECTÉ
-        if np.sum(thresh) > 5000: # Seuil de mouvement (à ajuster selon la sensibilité voulue)
-            current_time = time.time()
-            
-            # On ne lance l'OCR que si le dernier scan date de plus de 2 secondes
-            if current_time - last_ocr_time > 2:
-                print("🚗 Mouvement détecté ! Analyse de la plaque...")
+        # Si mouvement détecté (ex: une voiture entre dans le cadre)
+        if np.sum(thresh) > SENSITIVITY:
+            now = time.time()
+            if now - last_detection_time > 10: # Évite de scanner 100 fois la même voiture
+                log("🚗 Mouvement détecté ! Analyse OCR...")
                 
-                # On lance l'OCR sur l'image haute résolution (frame originale)
                 results = reader.readtext(frame)
-                
                 for (bbox, text, confidence) in results:
                     if confidence > 0.4:
                         cleaned = "".join(c for c in text if c.isalnum()).upper()
-                        print(f"🔍 Plaque lue : {cleaned} ({int(confidence*100)}%)")
+                        log(f"🔍 Plaque lue : {cleaned} ({int(confidence*100)}%)")
                         
-                        if any(auth in cleaned for auth in WHITELIST):
-                            print(f"✅ ACCÈS VALIDÉ : {cleaned}")
-                            # --- ENVOI MQTT ---
-                            try:
-                                client = mqtt.Client()
-                                client.connect(MQTT_BROKER)
-                                client.publish(MQTT_TOPIC, "ON")
-                                client.disconnect()
-                            except: pass
-                            
-                last_ocr_time = current_time
+                        # Vérification Whitelist
+                        if any(auth.replace(" ","") in cleaned for auth in WHITELIST):
+                            send_open_command(cleaned)
+                            last_detection_time = now
+                            break # On arrête l'analyse pour cette image
 
-        # Vider le buffer pour ne pas avoir de retard (lag)
-        for _ in range(10): cap.grab()
+        # Vider le buffer RTSP pour rester en temps réel
+        for _ in range(15): cap.grab()
         time.sleep(0.1)
 
 if __name__ == "__main__":
